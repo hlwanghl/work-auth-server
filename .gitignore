@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.eclipse/
+.classpath
+.project
+.settings/
+out/
+
+# Misc
+*.log
+HELP.md
+
+# Claude Code local state
+.claude/settings.local.json

@@ -1,0 +1,21 @@
+server:
+  port: 9000
+
+app:
+  # HTTP request header that a trusted gateway/proxy injects to identify the already-authenticated user.
+  header:
+    name: X-Account-Id
+  # When the header is missing or the account is unknown, unauthenticated requests are redirected here
+  # with a "${return-to-param}=<original URL>" query so the SSO can send the user back after login.
+  sso:
+    login-url: https://sso.example.com/login
+    return-to-param: return_to
+  # MCP authorization: the MCP server's resource identifier. Becomes the access-token `aud`
+  # (RFC 8707 audience) and the sole allowed `resource` request parameter value.
+  mcp:
+    resource: http://localhost:8081
+
+logging:
+  level:
+    org.springframework.security: info
+    org.springframework.security.oauth2: info

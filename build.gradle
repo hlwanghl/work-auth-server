@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.0'
+}
+
+group = 'com.work'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Boot 4.1.x BOM via Gradle-native platform() (no io.spring.dependency-management
+    // plugin needed). This manages Spring Security 7.1.x and the merged authorization-server module.
+    implementation platform('org.springframework.boot:spring-boot-dependencies:4.1.0')
+
+    // Spring Security Authorization Server (merged into Spring Security 7.0+) + web stack
+    implementation 'org.springframework.boot:spring-boot-starter-oauth2-authorization-server'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
