@@ -2,11 +2,14 @@ package com.work.authserver.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
  * Application configuration for the header-based authentication model and the external SSO login.
  *
  * <pre>
  * app:
+ *   issuer: http://localhost:8081
  *   header:
  *     name: X-Account-Id
  *   sso:
@@ -14,14 +17,36 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     return-to-param: return_to
  *   mcp:
  *     resource: http://localhost:8081
+ *   dcr:
+ *     evict-unused-after: 1h
  * </pre>
  */
 @ConfigurationProperties("app")
 public class AppProperties {
 
+    /**
+     * The authorization server's issuer identifier &mdash; the {@code iss} claim stamped on every
+     * issued token and the {@code issuer} advertised in {@code /.well-known/oauth-authorization-server}.
+     *
+     * <p>Hard-set (rather than derived from the request) so it is stable regardless of how the server
+     * is reached. This server sits behind {@code work-mcp-gateway}, which is the public origin, so the
+     * default is the gateway's URL ({@code http://localhost:8081}), not this server's internal
+     * {@code :9000} port. The gateway validates tokens for exactly this issuer.
+     */
+    private String issuer = "http://localhost:8081";
+
     private Header header = new Header();
     private Sso sso = new Sso();
     private Mcp mcp = new Mcp();
+    private Dcr dcr = new Dcr();
+
+    public String getIssuer() {
+        return issuer;
+    }
+
+    public void setIssuer(String issuer) {
+        this.issuer = issuer;
+    }
 
     public Header getHeader() {
         return header;
@@ -45,6 +70,14 @@ public class AppProperties {
 
     public void setMcp(Mcp mcp) {
         this.mcp = mcp;
+    }
+
+    public Dcr getDcr() {
+        return dcr;
+    }
+
+    public void setDcr(Dcr dcr) {
+        this.dcr = dcr;
     }
 
     public static class Header {
@@ -115,6 +148,30 @@ public class AppProperties {
 
         public void setResource(String resource) {
             this.resource = resource;
+        }
+    }
+
+    /**
+     * Dynamic Client Registration (RFC 7591) housekeeping. Open DCR stays open in prod (agent-native),
+     * so the client store self-cleans: idle dynamic registrations are reaped after
+     * {@link #evictUnusedAfter}; the seeded static demo clients are never evicted. See
+     * {@code ExpiringRegisteredClientRepository}.
+     */
+    public static class Dcr {
+
+        /**
+         * Idle dynamic registrations older than this are reaped by the scheduled sweep (a registration
+         * that is read in the meantime &mdash; authorize/token &mdash; stays alive). Spring Boot binds
+         * ISO-8601 ({@code PT1H}) or suffixed ({@code 1h}, {@code 3600s}) durations.
+         */
+        private Duration evictUnusedAfter = Duration.ofHours(1);
+
+        public Duration getEvictUnusedAfter() {
+            return evictUnusedAfter;
+        }
+
+        public void setEvictUnusedAfter(Duration evictUnusedAfter) {
+            this.evictUnusedAfter = evictUnusedAfter;
         }
     }
 }

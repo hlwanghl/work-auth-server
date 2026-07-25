@@ -100,6 +100,29 @@ class DcrTests {
         return node == null ? null : node.asString();
     }
 
+    @Test
+    void byReferenceKeyJwksUriIsRejected() throws Exception {
+        // jwks_uri (client keys by reference) must be rejected: the server must never dereference a
+        // client-supplied URL (egress / SSRF surface). Use an https URL on purpose — the old
+        // DEFAULT_JWK_SET_URI_VALIDATOR only checked the scheme and would have ACCEPTED this; rejecting it
+        // proves the reject-validator is doing the work. A hostile jwks_uri aimed at cloud-metadata or an
+        // internal host is the classic SSRF vector this guard blocks.
+        String registration = """
+                {
+                  "client_name": "hostile-client",
+                  "redirect_uris": ["%s"],
+                  "grant_types": ["authorization_code"],
+                  "response_types": ["code"],
+                  "token_endpoint_auth_method": "none",
+                  "jwks_uri": "https://attacker.example/.well-known/jwks.json"
+                }
+                """.formatted(REDIRECT_URI);
+
+        HttpResponse<String> register = TestHttp.postJson(client, url("/oauth2/register"), registration);
+        assertThat(register.statusCode()).isEqualTo(400);
+        assertThat(register.body()).contains("invalid_client_metadata");
+    }
+
     private static String jwtAud(String tokenJson) throws Exception {
         String accessToken = MAPPER.readTree(new StringReader(tokenJson)).get("access_token").asString();
         String payload = accessToken.split("\\.")[1];

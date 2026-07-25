@@ -17,29 +17,39 @@ server is now a module inside Spring Security 7.0+) that:
 
 > Requires **Java 17+**. Built with Gradle.
 
+> **Now fronted by [`work-mcp-gateway`](../work-mcp-gateway) (`:8081`).** This server boots on `:9000`
+> as an **internal backend**; callers reach it through the gateway's single public origin. Tokens are
+> stamped `iss = http://localhost:8081`, and the gateway injects the `X-Account-Id` on the authorize
+> flow (dev resolver). Direct `:9000` access is dev/internal only.
+
 ## How authentication works
 
 ```
-Browser ──GET /oauth2/authorize?…&code_challenge=…──▶  auth-server (no X-Account-Id)
+Browser ──GET /oauth2/authorize?…&code_challenge=…──▶ gateway :8081 ──▶ auth-server :9000 (no X-Account-Id)
                                                               │ anonymous
                                                               ▼
                                               302 → https://sso.example.com/login
-                                                    ?return_to=http://host/oauth2/authorize?…
-                                                              │ user logs in at SSO
+                                                    ?return_to=http://localhost:8081/oauth2/authorize?…
+                                                              │ user logs in at SSO  (dev: ?account=<id> bypass)
                                                               ▼
 Browser ◀──302 back to /oauth2/authorize?…── (gateway now injects X-Account-Id: acct-123)
                                                               │ header resolved → authenticated
                                                               ▼
 Browser ◀──302 to client redirect_uri?code=…────────────────┘
-Browser ──POST /oauth2/token (code + code_verifier)──────────▶  access_token (JWT)
+Browser ──POST /oauth2/token (code + code_verifier)──────────▶  access_token (JWT, iss/aud = http://localhost:8081)
 ```
 
-**Key assumption:** a gateway/reverse proxy in front of this server injects the `X-Account-Id`
-header for users the SSO has authenticated. The server trusts that header to identify the resource
-owner. Configure the header name, SSO URL and return-parameter in `application.yml`:
+**Key assumption (now satisfied):** a gateway/reverse proxy in front of this server injects the
+`X-Account-Id` header for users the SSO has authenticated. That proxy is **`work-mcp-gateway`**, which
+resolves the user on the `/oauth2/authorize` flow (dev: `?account=`) and forwards `Host: localhost:8081`
+(`PreserveHostHeader`). The server trusts that header to identify the resource owner. Configure the
+header name, SSO URL and return-parameter in `application.yml`:
 
 ```yaml
+server:
+  forward-headers-strategy: native   # honour X-Forwarded-* behind the gateway / TLS termination
 app:
+  issuer: http://localhost:8081      # public origin (the gateway) -> token `iss` + discovery addresses (hard-set)
   header:
     name: X-Account-Id
   sso:
@@ -49,13 +59,27 @@ app:
     resource: http://localhost:8081   # MCP server's resource identifier -> token `aud` + allowed `resource`
 ```
 
+Two things make behind-the-gateway operation correct and safe:
+
+* **Hard-set issuer** (`AuthorizationServerSettings.issuer = app.issuer`) — the `iss` claim and all
+  discovery endpoint addresses are `http://localhost:8081` regardless of the `Host`/`X-Forwarded-*`
+  headers a request arrives with, so they are stable across proxy hops. (`PreserveHostHeader` on the
+  gateway still keeps request-derived URLs like the SSO `return_to` on `:8081`.)
+* **Stateless sessions** (`SessionCreationPolicy.STATELESS` on both filter chains) — without this,
+  header-authenticated identity would leak across requests via `HttpSession` once a principal is set.
+  Safe here because consent is disabled (no session-bound consent/authorization state; codes live in
+  the in-memory `OAuth2AuthorizationService`).
+
 ## Run
 
 ```bash
-./gradlew bootRun          # starts on http://localhost:9000
+./gradlew bootRun          # starts on http://localhost:9000 (internal backend)
 ```
 
-Quick checks:
+This server is **internal**; in a real deployment callers reach it through `work-mcp-gateway` (`:8081`).
+In local dev you can still hit `:9000` directly to inspect it.
+
+Quick checks (direct on the internal `:9000`, simulating the trusted-proxy header by hand):
 
 ```bash
 # No header -> redirected to the external SSO (with return_to)
@@ -69,6 +93,13 @@ curl -i -H 'X-Account-Id: nobody' http://localhost:9000/api/me
 
 # Token signing keys published
 curl -s http://localhost:9000/oauth2/jwks
+```
+
+Through the gateway (`:8081`), the `X-Account-Id` is injected for you (dev: `?account=`):
+
+```bash
+curl -i "http://localhost:8081/api/me?account=acct-123"   # gateway injects X-Account-Id: acct-123
+curl -i http://localhost:8081/api/me                      # no ?account -> SSO redirect
 ```
 
 ## Registered clients
@@ -150,26 +181,28 @@ it is implemented here as a thin overlay:
   resource server validates).
 
 ```
-agent ──GET /oauth2/authorize?...&resource=http://localhost:8081&code_challenge=…──▶ auth-server
+agent ──GET /oauth2/authorize?...&resource=http://localhost:8081&code_challenge=…──▶ gateway :8081 ──▶ auth-server
 auth-server ──302 ?code=… (X-Account-Id resolves the user via SSO)──▶ agent
-agent ──POST /oauth2/token (code + verifier)──▶ access_token (JWT, aud=http://localhost:8081)
-agent ──MCP request, Authorization: Bearer <jwt>──▶ MCP server (resource server, validates aud+JWKS)
+agent ──POST /oauth2/token (code + verifier)──▶ access_token (JWT, iss/aud=http://localhost:8081)
+agent ──MCP request, Authorization: Bearer <jwt>──▶ gateway (resource server, validates iss/aud+JWKS) ──▶ MCP server
 ```
 
-Endpoints the agent needs are auto-published:
+Endpoints the agent needs are auto-published (reachable on the public `:8081`; same paths on internal
+`:9000`):
 
 ```bash
-curl -s http://localhost:9000/.well-known/oauth-authorization-server   # RFC 8414 metadata (incl. registration_endpoint)
-curl -s http://localhost:9000/oauth2/jwks                              # token signing keys
+curl -s http://localhost:8081/.well-known/oauth-authorization-server   # RFC 8414 metadata (incl. registration_endpoint)
+curl -s http://localhost:8081/oauth2/jwks                              # token signing keys
 ```
 
 ### Dynamic Client Registration (RFC 7591)
 
 Any agent can self-register a `client_id` (no pre-shared secret) at `/oauth2/register`, then
-immediately run the auth-code + PKCE flow with it:
+immediately run the auth-code + PKCE flow with it. Through the gateway (`:8081`, the public front
+door):
 
 ```bash
-curl -s -X POST http://localhost:9000/oauth2/register -H 'Content-Type: application/json' -d '{
+curl -s -X POST http://localhost:8081/oauth2/register -H 'Content-Type: application/json' -d '{
   "client_name": "my-agent",
   "redirect_uris": ["http://127.0.0.1:8765/callback"],
   "grant_types": ["authorization_code", "refresh_token"],
@@ -178,28 +211,55 @@ curl -s -X POST http://localhost:9000/oauth2/register -H 'Content-Type: applicat
   "scope": "mcp:tools mcp:resources"
 }'
 # -> 201 with a client_id (public client, PKCE); no client_secret
+# (the same path on the internal :9000 also works)
 ```
 
 Configuration notes (in `SecurityConfig`):
 
 - **Open registration** (`openRegistrationAllowed(true)`) — the endpoint is **unauthenticated**, so
-  any client can register. Gate it behind a trusted proxy / network policy before exposing publicly.
+  any client can register. It is exposed on the public front door by default for MCP compliance (a
+  generic client with no pre-configured `client_id` self-registers here); `work-mcp-gateway` gates it
+  with `gateway.auth.dcr.exposed` (default `true` → proxied; `false` → 404 on `:8081`, still reachable
+  on the internal `:9000`). **Keep it open in prod for an agent-native product — harden, don't disable.**
+  Flood control is in place: the gateway applies a **per-IP rate limit** on `/oauth2/register`
+  (`gateway.auth.dcr.rate-limit`; see `work-mcp-gateway`), and this server **reaps idle dynamic
+  registrations** via `ExpiringRegisteredClientRepository` (`app.dcr.evict-unused-after`, default `1h`;
+  a registration read in the meantime — authorize/token — stays alive; the seeded `demo-client`/
+  `mcp-agent` are whitelisted and never evicted). Remaining hardening to add: a strict scope allowlist
+  and loopback/https-only `redirect_uri`s. (Authenticated DCR via an RFC 7592 Initial Access Token or
+  pre-registered clients are the options if you ever choose to *close* it — at the cost of self-onboarding.)
+- **Zero egress during registration (enforced)** — the DCR validator chain (`DEFAULT_REDIRECT_URI_VALIDATOR`
+  → a `jwks_uri` reject → `SIMPLE_SCOPE_VALIDATOR`) makes **no outbound calls** to client-supplied URLs:
+  `jwks_uri` is rejected outright with `invalid_client_metadata` (the built-in `DEFAULT_JWK_SET_URI_VALIDATOR`
+  only checked the scheme and never fetched; the reject makes "no by-reference client keys" an enforced
+  invariant instead of an incidental one, so a future `private_key_jwt` client or a re-wired
+  `X509SelfSignedCertificateVerifier` can't quietly open an SSRF/egress hole). OIDC is off so
+  `sector_identifier_uri` is never read either. Open DCR is therefore safe behind a strict egress allowlist.
+  By-value `jwks` would still be egress-safe if ever needed; public PKCE clients need no keys.
 - **Self-declared scopes** — the default DCR validator rejects any `scope`; the SIMPLE scope validator
   is used so agents can declare `mcp:*` scopes (strict redirect-URI https/loopback + jwk checks are
   kept). Replace it with a custom validator to restrict agents to a fixed scope set.
 - **Consent disabled** — headless agents have no consent UI, so the consent step is turned off for
   every client (dynamically-registered clients default to consent-required).
-- Registrations are **in-memory** and lost on restart — swap in a persistent
-  `RegisteredClientRepository` for production.
+- Registrations are **in-memory and self-evicting** (`ExpiringRegisteredClientRepository`) — idle
+  dynamic clients are reaped after `app.dcr.evict-unused-after` (default `1h`); the seeded static
+  clients are whitelisted. Still lost on restart — swap in a persistent (JDBC)
+  `RegisteredClientRepository` for production (Phase 4; that replaces the eviction repo and sets a real
+  client-lifetime policy).
 
-**Not yet done (next steps when the MCP server is ready):**
+**Done — `work-mcp-gateway` now fronts this server:**
+
+- **MCP resource-server side** — the gateway runs as the OAuth2 resource server: it validates these
+  JWTs (issuer `http://localhost:8081` via `/oauth2/jwks`, enforces `aud = http://localhost:8081`),
+  relays `sub` to the MCP backend as `X-Account-Id`, and serves **RFC 9728 Protected Resource Metadata**
+  (`/.well-known/oauth-protected-resource`) listing this server under `authorization_servers`.
+
+**Not yet done (next steps):**
 
 - **Multiple resources** — `aud` is currently fixed to the single `app.mcp.resource`; extend the
   customizer to bind `aud` to the per-request `resource` when more than one MCP server exists.
-- **MCP server side (separate app)** — run it as an OAuth2 resource server (validate the JWT via
-  `/.well-known/oauth-authorization-server` issuer + `/oauth2/jwks`, enforce `aud` = its own URL and
-  scopes) and expose **RFC 9728 Protected Resource Metadata**
-  (`/.well-known/oauth-protected-resource`) listing this server under `authorization_servers`.
+- **Real SSO** — the gateway's account resolution is a dev `?account=` bypass; a signed SSO assertion
+  / session-cookie flow (replacing the bypass) is the real integration still to build.
 - **Persistent key/client store** — the in-memory RSA key and clients are recreated on each restart,
   so refresh tokens don't survive. Required before production.
 

@@ -1,8 +1,16 @@
 server:
   port: 9000
+  # This server sits behind work-mcp-gateway, which is the public origin (:8081). PreserveHostHeader
+  # on the gateway's auth route forwards Host: localhost:8081; this strategy lets Tomcat honour
+  # X-Forwarded-Proto (scheme fix-up behind TLS termination). Harmless in http dev.
+  forward-headers-strategy: native
 
 app:
+  # The authorization-server issuer = the public origin (the gateway in front of this server), not
+  # this server's internal :9000. Stamped as the token `iss` and advertised in discovery metadata.
+  issuer: http://localhost:8081
   # HTTP request header that a trusted gateway/proxy injects to identify the already-authenticated user.
+  # That gateway is work-mcp-gateway, which now injects it on the /oauth2/authorize flow.
   header:
     name: X-Account-Id
   # When the header is missing or the account is unknown, unauthenticated requests are redirected here
@@ -14,6 +22,10 @@ app:
   # (RFC 8707 audience) and the sole allowed `resource` request parameter value.
   mcp:
     resource: http://localhost:8081
+  # Dynamic Client Registration (RFC 7591) housekeeping: idle dynamic registrations are reaped after
+  # this (a registration read in the meantime stays alive); the seeded static clients are never evicted.
+  dcr:
+    evict-unused-after: 1h
 
 logging:
   level:

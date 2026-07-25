@@ -5,13 +5,13 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.work.authserver.client.ExpiringRegisteredClientRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
-import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
 import org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
@@ -45,7 +45,7 @@ import java.util.UUID;
 public class AuthorizationServerConfig {
 
     @Bean
-    public RegisteredClientRepository registeredClientRepository() {
+    public RegisteredClientRepository registeredClientRepository(AppProperties properties) {
         RegisteredClient demoClient = RegisteredClient.withId(UUID.randomUUID().toString())
                 .clientId("demo-client")
                 // Public client -> no secret, PKCE is automatically required
@@ -79,7 +79,8 @@ public class AuthorizationServerConfig {
                         .build())
                 .build();
 
-        return new InMemoryRegisteredClientRepository(demoClient, mcpAgent);
+        return new ExpiringRegisteredClientRepository(List.of(demoClient, mcpAgent),
+                properties.getDcr().getEvictUnusedAfter());
     }
 
     /**
@@ -131,7 +132,13 @@ public class AuthorizationServerConfig {
     }
 
     @Bean
-    public AuthorizationServerSettings authorizationServerSettings() {
-        return AuthorizationServerSettings.builder().build();
+    public AuthorizationServerSettings authorizationServerSettings(AppProperties properties) {
+        // Issuer is hard-set to the public origin (work-mcp-gateway, :8081), not derived from the
+        // request, so the `iss` claim and the authorization-server metadata are stable regardless of
+        // how this server is reached (internal :9000 vs. proxied :8081). The gateway validates tokens
+        // for exactly this issuer.
+        return AuthorizationServerSettings.builder()
+                .issuer(properties.getIssuer())
+                .build();
     }
 }
