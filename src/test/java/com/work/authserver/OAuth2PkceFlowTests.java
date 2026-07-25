@@ -51,6 +51,25 @@ class OAuth2PkceFlowTests {
     }
 
     @Test
+    void authorizeWithTrailingSlashResourceIssuesCode() throws Exception {
+        // RFC 8707 resource-indicator: a generic MCP client (the Inspector) normalizes the PRM resource
+        // to add a root slash, sending resource=http://localhost:8081/ . That must be accepted as the
+        // same resource as the configured http://localhost:8081 (RFC 3986: empty path == "/"), else the
+        // client sees invalid_target and the OAuth dance dead-ends.
+        String codeChallenge = TestHttp.s256("a-strong-random-verifier-value-with-43-to-128-chars-0123456789");
+        String url = authorizeUrl(codeChallenge)
+                + "&resource=" + URLEncoder.encode("http://localhost:8081/", StandardCharsets.UTF_8);
+
+        HttpResponse<String> response = TestHttp.get(client, url, "X-Account-Id", "acct-123");
+
+        assertThat(response.statusCode()).isEqualTo(302);
+        String location = response.headers().firstValue("Location").orElseThrow();
+        assertThat(location).startsWith(TestHttp.REDIRECT_URI);
+        assertThat(location).contains("code=");
+        assertThat(location).doesNotContain("invalid_target");
+    }
+
+    @Test
     void authorizationCodeWithPkce() throws Exception {
         String codeVerifier = "a-strong-random-verifier-value-with-43-to-128-chars-0123456789";
         String codeChallenge = TestHttp.s256(codeVerifier);
