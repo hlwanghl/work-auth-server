@@ -31,7 +31,7 @@ class SecurityFilterChainTests {
 
         assertThat(response.statusCode()).isEqualTo(302);
         String location = response.headers().firstValue("Location").orElseThrow();
-        assertThat(location).startsWith("https://sso.example.com/login");
+        assertThat(location).startsWith("http://localhost:8081/dev-sso/login");
         assertThat(location).contains("return_to=");
         assertThat(location).contains("/api/me");
     }
@@ -52,6 +52,6 @@ class SecurityFilterChainTests {
 
         assertThat(response.statusCode()).isEqualTo(302);
         assertThat(response.headers().firstValue("Location").orElseThrow())
-                .startsWith("https://sso.example.com/login");
+                .startsWith("http://localhost:8081/dev-sso/login");
     }
 }

@@ -16,7 +16,10 @@ app:
   # When the header is missing or the account is unknown, unauthenticated requests are redirected here
   # with a "${return-to-param}=<original URL>" query so the SSO can send the user back after login.
   sso:
-    login-url: https://sso.example.com/login
+    # Dev: point at the gateway's mock-SSO (MockSsoLoginController on :8081) so an unauthenticated
+    # authorize call completes the OAuth dance on the public origin instead of bouncing to the
+    # unimplemented sso.example.com stub. Prod overrides this with the real SSO URL.
+    login-url: http://localhost:8081/dev-sso/login
     return-to-param: return_to
   # MCP authorization: the MCP server's resource identifier. Becomes the access-token `aud`
   # (RFC 8707 audience) and the sole allowed `resource` request parameter value.

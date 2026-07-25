@@ -28,9 +28,9 @@ server is now a module inside Spring Security 7.0+) that:
 Browser ──GET /oauth2/authorize?…&code_challenge=…──▶ gateway :8081 ──▶ auth-server :9000 (no X-Account-Id)
                                                               │ anonymous
                                                               ▼
-                                              302 → https://sso.example.com/login
+                                              302 → http://localhost:8081/dev-sso/login
                                                     ?return_to=http://localhost:8081/oauth2/authorize?…
-                                                              │ user logs in at SSO  (dev: ?account=<id> bypass)
+                                                              │ dev mock-SSO "logs in" + 302 back with &account=<id>
                                                               ▼
 Browser ◀──302 back to /oauth2/authorize?…── (gateway now injects X-Account-Id: acct-123)
                                                               │ header resolved → authenticated
@@ -53,7 +53,9 @@ app:
   header:
     name: X-Account-Id
   sso:
-    login-url: https://sso.example.com/login
+    # Dev: the gateway's mock-SSO (MockSsoLoginController) so authorize completes on :8081 instead of
+    # bouncing to the unimplemented sso.example.com stub. Prod overrides with the real SSO URL.
+    login-url: http://localhost:8081/dev-sso/login
     return-to-param: return_to
   mcp:
     resource: http://localhost:8081   # MCP server's resource identifier -> token `aud` + allowed `resource`
@@ -82,7 +84,7 @@ In local dev you can still hit `:9000` directly to inspect it.
 Quick checks (direct on the internal `:9000`, simulating the trusted-proxy header by hand):
 
 ```bash
-# No header -> redirected to the external SSO (with return_to)
+# No header -> redirected to the SSO login-url (dev: the gateway's /dev-sso/login), with return_to
 curl -i http://localhost:9000/api/me
 
 # Header present -> authenticated
