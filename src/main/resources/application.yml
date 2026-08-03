@@ -4,6 +4,13 @@ server:
   # on the gateway's auth route forwards Host: localhost:8081; this strategy lets Tomcat honour
   # X-Forwarded-Proto (scheme fix-up behind TLS termination). Harmless in http dev.
   forward-headers-strategy: native
+  # Surface the actual error reason on the global /error page. Unrecoverable authorization errors
+  # (unknown client_id, untrusted redirect_uri) that can't be sent back to the client land here; the
+  # default (never) renders only an opaque "Bad Request" Whitelabel page, which reads as a bare 404
+  # to someone debugging `claude mcp auth`. DEV posture — a prod error page would sanitize this.
+  error:
+    include-message: always
+    include-exception: true
 
 app:
   # The authorization-server issuer = the public origin (the gateway in front of this server), not
