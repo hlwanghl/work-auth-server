@@ -1,4 +1,4 @@
-package com.work.authserver.security;
+package com.work.authserver.identity;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;

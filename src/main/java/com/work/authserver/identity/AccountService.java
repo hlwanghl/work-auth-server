@@ -1,4 +1,4 @@
-package com.work.authserver.user;
+package com.work.authserver.identity;
 
 import java.util.Optional;
 

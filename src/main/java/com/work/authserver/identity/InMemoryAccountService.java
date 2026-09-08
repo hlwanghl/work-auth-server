@@ -1,4 +1,4 @@
-package com.work.authserver.user;
+package com.work.authserver.identity;
 
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Service;

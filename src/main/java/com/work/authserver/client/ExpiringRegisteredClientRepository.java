@@ -5,50 +5,41 @@ import org.springframework.security.oauth2.server.authorization.client.Registere
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
 
 import java.time.Duration;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
 /**
- * In-memory {@link RegisteredClientRepository} that bounds storage by evicting idle
- * dynamically-registered clients &mdash; the cleanup half of keeping open DCR (RFC 7591) safe on a
- * public origin (the rate limit at the gateway stops a flood; this reaps what still got created).
+ * In-memory {@link RegisteredClientRepository} that bounds storage by evicting idle dynamically-registered
+ * clients &mdash; the cleanup half of keeping open DCR (RFC 7591) safe on a public origin (the rate limit
+ * at the gateway stops a flood; this reaps what still got created). The repository starts EMPTY: this
+ * server ships no static clients &mdash; every client is an MCP client that self-registered via open DCR
+ * (FR-6/FR-7 in docs/requirements.md).
  *
- * <p><b>Eviction rule:</b> a client is reaped when {@code now - lastSeen > evictUnusedAfter} <em>and</em>
- * it is not on the static-client whitelist. Reads ({@link #findById} / {@link #findByClientId}) refresh
- * {@code lastSeen}, so a client that is actually being used (authorize / token / introspect) is never
- * reaped &mdash; only registrations that were created and then abandoned. The seeded static demo clients
- * ({@code demo-client}, {@code mcp-agent}) are whitelisted by {@code clientId} and never evicted (their
- * {@code id}s are random per-startup, so the whitelist keys on the stable {@code clientId}).
+ * <p><b>Eviction rule:</b> a client is reaped when {@code now - lastSeen > evictUnusedAfter}. Reads
+ * ({@link #findById} / {@link #findByClientId}) refresh {@code lastSeen}, so a client that is actually
+ * being used (authorize / token / introspect) is never reaped &mdash; only registrations that were
+ * created and then abandoned.
  *
- * <p>This is an interim single-instance store (lost on restart). Phase 4 replaces it with a persistent
- * JDBC repository and a real client-lifetime policy; the eviction rule is deliberately conservative so
- * it is safe to ship now. The millis-clock is injectable solely so the unit test can advance time
- * deterministically instead of sleeping.
+ * <p>This is an interim single-instance store (lost on restart). It is replaced by a persistent (JDBC)
+ * repository and a real client-lifetime policy before production; the eviction rule is deliberately
+ * conservative so it is safe to ship now. The millis-clock is injectable solely so the unit test can
+ * advance time deterministically instead of sleeping.
  */
 public class ExpiringRegisteredClientRepository implements RegisteredClientRepository {
 
     private final ConcurrentHashMap<String, Entry> clientsById = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> idByClientId = new ConcurrentHashMap<>();
-    private final Set<String> whitelist = new HashSet<>();
     private final Duration evictUnusedAfter;
     private final LongSupplier clock;
 
-    public ExpiringRegisteredClientRepository(List<RegisteredClient> seed, Duration evictUnusedAfter) {
-        this(seed, evictUnusedAfter, System::currentTimeMillis);
+    public ExpiringRegisteredClientRepository(Duration evictUnusedAfter) {
+        this(evictUnusedAfter, System::currentTimeMillis);
     }
 
     /** Test seam: inject a controllable clock so eviction is deterministic without sleeping. */
-    ExpiringRegisteredClientRepository(List<RegisteredClient> seed, Duration evictUnusedAfter, LongSupplier clock) {
+    ExpiringRegisteredClientRepository(Duration evictUnusedAfter, LongSupplier clock) {
         this.evictUnusedAfter = evictUnusedAfter;
         this.clock = clock;
-        // Seed the static demo clients and whitelist them so they are never evicted.
-        for (RegisteredClient client : seed) {
-            this.whitelist.add(client.getClientId());
-            save(client);
-        }
     }
 
     @Override
@@ -76,16 +67,13 @@ public class ExpiringRegisteredClientRepository implements RegisteredClientRepos
     }
 
     /**
-     * Reap idle, non-whitelisted clients (every 10 minutes). Cadence is fixed; a flood's worth of
-     * idle entries lives at most until the next sweep, bounded by the per-IP limit at the gateway.
+     * Reap idle clients (every 10 minutes). Cadence is fixed; a flood's worth of idle entries lives at
+     * most until the next sweep, bounded by the per-IP limit at the gateway.
      */
     @Scheduled(fixedDelay = 600_000)
     void sweep() {
         long cutoff = clock.getAsLong() - evictUnusedAfter.toMillis();
-        clientsById.entrySet().removeIf(e -> {
-            Entry entry = e.getValue();
-            return entry.lastSeen < cutoff && !whitelist.contains(entry.client.getClientId());
-        });
+        clientsById.entrySet().removeIf(e -> e.getValue().lastSeen < cutoff);
         // Drop index entries whose client was just removed.
         idByClientId.entrySet().removeIf(e -> !clientsById.containsKey(e.getValue()));
     }

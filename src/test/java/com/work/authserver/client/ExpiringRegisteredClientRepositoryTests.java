@@ -6,22 +6,21 @@ import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 
 import java.time.Duration;
-import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Plain unit test of the eviction rule with an injectable clock (no Spring context, no sleeping). Pins:
- * the seeded static client is never evicted; an idle dynamic client is reaped past the TTL; a read
- * refreshes {@code lastSeen} so an actively-used client survives.
+ * Plain unit test of the eviction rule with an injectable clock (no Spring context, no sleeping).
+ * Pins: the repository starts empty (no static clients, FR-6 in docs/requirements.md); an idle client
+ * is reaped past the TTL; a read refreshes {@code lastSeen} so an actively-used client survives.
  */
 class ExpiringRegisteredClientRepositoryTests {
 
     private final AtomicLong millis = new AtomicLong(1_000_000L);
 
-    private ExpiringRegisteredClientRepository repo(Duration ttl, RegisteredClient... seed) {
-        return new ExpiringRegisteredClientRepository(List.of(seed), ttl, millis::get);
+    private ExpiringRegisteredClientRepository repo(Duration ttl) {
+        return new ExpiringRegisteredClientRepository(ttl, millis::get);
     }
 
     private static RegisteredClient client(String id, String clientId) {
@@ -35,24 +34,14 @@ class ExpiringRegisteredClientRepositoryTests {
     }
 
     @Test
-    void staticClientIsNeverEvicted() {
-        RegisteredClient demo = client("id-demo", "demo-client");
-        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100), demo);
-
-        millis.addAndGet(10_000); // well past the TTL
-        repo.sweep();
-
-        assertThat(repo.findByClientId("demo-client")).isNotNull();
-        assertThat(repo.findById("id-demo")).isNotNull();
+    void startsEmpty() {
+        assertThat(repo(Duration.ofMillis(100)).size()).isZero();
     }
 
     @Test
-    void idleDynamicClientIsReapedAfterTtl() {
-        RegisteredClient demo = client("id-demo", "demo-client");
-        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100), demo);
-
-        RegisteredClient dyn = client("id-dyn", "dynamic-1");
-        repo.save(dyn);
+    void idleClientIsReapedAfterTtl() {
+        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100));
+        repo.save(client("id-dyn", "dynamic-1"));
         assertThat(repo.findByClientId("dynamic-1")).isNotNull();
 
         // Idle past the TTL, never read in the meantime.
@@ -64,12 +53,9 @@ class ExpiringRegisteredClientRepositoryTests {
     }
 
     @Test
-    void recentlyReadDynamicClientSurvives() {
-        RegisteredClient demo = client("id-demo", "demo-client");
-        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100), demo);
-
-        RegisteredClient dyn = client("id-dyn", "dynamic-1");
-        repo.save(dyn);
+    void recentlyReadClientSurvives() {
+        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100));
+        repo.save(client("id-dyn", "dynamic-1"));
         // Advance less than the TTL, then read -> lastSeen refreshed to now.
         millis.addAndGet(50);
         assertThat(repo.findByClientId("dynamic-1")).isNotNull();
@@ -81,11 +67,8 @@ class ExpiringRegisteredClientRepositoryTests {
 
     @Test
     void repeatedReadsKeepClientAliveBeyondRawTtl() {
-        RegisteredClient demo = client("id-demo", "demo-client");
-        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100), demo);
-
-        RegisteredClient dyn = client("id-dyn", "dynamic-1");
-        repo.save(dyn);
+        ExpiringRegisteredClientRepository repo = repo(Duration.ofMillis(100));
+        repo.save(client("id-dyn", "dynamic-1"));
 
         // Each read resets the clock; over a span far beyond the raw TTL, an in-use client stays.
         for (int i = 0; i < 5; i++) {

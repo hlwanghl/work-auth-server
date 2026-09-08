@@ -130,9 +130,9 @@ public class AppProperties {
      *   <li>the single allowed value of the {@code resource} request parameter (RFC 8707). A client
      *       requesting a different {@code resource} is rejected with {@code invalid_target}.</li>
      * </ul>
-     * Note: Spring Authorization Server 7.1 has no native RFC 8707 support, so both behaviours are
-     * implemented here as a thin overlay (see {@code McpResourceIndicatorAuthenticationConverter}
-     * and the access-token customizer in {@code AuthorizationServerConfig}).
+ * Note: Spring Authorization Server 7.1 has no native RFC 8707 support, so both behaviours are
+ * implemented here as a thin overlay (see {@code mcp/ResourceIndicatorAuthenticationConverter}
+ * and {@code mcp/McpAudienceTokenCustomizer}).
      */
     public static class Mcp {
 

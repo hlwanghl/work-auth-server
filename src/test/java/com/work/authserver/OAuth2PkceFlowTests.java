@@ -1,8 +1,10 @@
 package com.work.authserver;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.junit.jupiter.api.TestInstance;
 
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -14,12 +16,14 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Drives the full OAuth 2.1 Authorization Code + PKCE flow end-to-end over real HTTP:
- * authorize (with the X-Account-Id header) -> exchange code + verifier at the token endpoint ->
+ * Drives the full OAuth 2.1 Authorization Code + PKCE flow end-to-end over real HTTP, the way an MCP
+ * client experiences it: DCR registration (no static clients, FR-6) -> authorize (with the
+ * X-Account-Id header) -> explicit consent (FR-5) -> exchange code + verifier at the token endpoint ->
  * JWT access token. Also verifies the authorize endpoint redirects to the external SSO (preserving
  * the PKCE params in {@code return_to}) when no account-id header is present.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class OAuth2PkceFlowTests {
 
     @LocalServerPort
@@ -27,12 +31,19 @@ class OAuth2PkceFlowTests {
 
     private final HttpClient client = TestHttp.client();
 
+    private String clientId;
+
+    @BeforeAll
+    void registerClient() throws Exception {
+        this.clientId = TestHttp.registerPublicClient(client, port, TestHttp.REDIRECT_URI, "read");
+    }
+
     private String url(String path) {
         return "http://localhost:" + port + path;
     }
 
     private String authorizeUrl(String codeChallenge) {
-        return url("/oauth2/authorize?response_type=code&client_id=" + TestHttp.CLIENT_ID
+        return url("/oauth2/authorize?response_type=code&client_id=" + clientId
                 + "&redirect_uri=" + URLEncoder.encode(TestHttp.REDIRECT_URI, StandardCharsets.UTF_8)
                 + "&scope=read&state=xyz"
                 + "&code_challenge=" + codeChallenge
@@ -60,10 +71,11 @@ class OAuth2PkceFlowTests {
         String url = authorizeUrl(codeChallenge)
                 + "&resource=" + URLEncoder.encode("http://localhost:8081/", StandardCharsets.UTF_8);
 
-        HttpResponse<String> response = TestHttp.get(client, url, "X-Account-Id", "acct-123");
+        HttpResponse<String> authorize = TestHttp.get(client, url, "X-Account-Id", "acct-123");
+        HttpResponse<String> consent = TestHttp.approveConsent(client, url(""), authorize, "acct-123");
 
-        assertThat(response.statusCode()).isEqualTo(302);
-        String location = response.headers().firstValue("Location").orElseThrow();
+        assertThat(consent.statusCode()).isEqualTo(302);
+        String location = consent.headers().firstValue("Location").orElseThrow();
         assertThat(location).startsWith(TestHttp.REDIRECT_URI);
         assertThat(location).contains("code=");
         assertThat(location).doesNotContain("invalid_target");
@@ -74,12 +86,14 @@ class OAuth2PkceFlowTests {
         String codeVerifier = "a-strong-random-verifier-value-with-43-to-128-chars-0123456789";
         String codeChallenge = TestHttp.s256(codeVerifier);
 
-        // 1. Authorize as acct-123 (resolved from the header) -> redirect to client with code
+        // 1. Authorize as acct-123 (resolved from the header) -> consent page -> approve -> code
         HttpResponse<String> authorize =
                 TestHttp.get(client, authorizeUrl(codeChallenge), "X-Account-Id", "acct-123");
+        HttpResponse<String> consent =
+                TestHttp.approveConsent(client, url(""), authorize, "acct-123");
 
-        assertThat(authorize.statusCode()).isEqualTo(302);
-        String location = authorize.headers().firstValue("Location").orElseThrow();
+        assertThat(consent.statusCode()).isEqualTo(302);
+        String location = consent.headers().firstValue("Location").orElseThrow();
         String code = TestHttp.parseQuery(location).get("code");
         assertThat(code).isNotBlank();
 
@@ -88,7 +102,7 @@ class OAuth2PkceFlowTests {
         tokenParams.put("grant_type", "authorization_code");
         tokenParams.put("code", code);
         tokenParams.put("redirect_uri", TestHttp.REDIRECT_URI);
-        tokenParams.put("client_id", TestHttp.CLIENT_ID);
+        tokenParams.put("client_id", clientId);
         tokenParams.put("code_verifier", codeVerifier);
 
         HttpResponse<String> token = TestHttp.postForm(client, url("/oauth2/token"), tokenParams);

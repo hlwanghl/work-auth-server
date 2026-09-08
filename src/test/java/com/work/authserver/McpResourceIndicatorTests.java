@@ -1,55 +1,58 @@
 package com.work.authserver;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
-import com.work.authserver.config.AppProperties;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 
-import java.io.StringReader;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Exercises the RFC 8707 (resource indicator) overlay and MCP token audience over real HTTP,
- * using the {@code mcp-agent} client:
+ * Exercises the RFC 8707 (resource indicator) overlay and MCP token audience over real HTTP, using a
+ * dynamically-registered client (FR-6):
  * <ul>
  *   <li>issued access token's {@code aud} equals the configured MCP resource;</li>
- *   <li>an authorize request with the allowed {@code resource} succeeds;</li>
+ *   <li>an authorize request with the allowed {@code resource} succeeds (through the consent step);</li>
  *   <li>an authorize request with a disallowed {@code resource} is rejected with
  *       {@code invalid_target}.</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpResourceIndicatorTests {
 
-    private static final String AGENT_CLIENT_ID = "mcp-agent";
     private static final String AGENT_REDIRECT_URI = "http://127.0.0.1:8080/callback";
-    private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     @LocalServerPort
     private int port;
 
     @Autowired
-    private AppProperties properties;
+    private com.work.authserver.config.AppProperties properties;
 
     private final HttpClient client = TestHttp.client();
+
+    private String clientId;
+
+    @BeforeAll
+    void registerClient() throws Exception {
+        this.clientId = TestHttp.registerPublicClient(client, port, AGENT_REDIRECT_URI, "mcp:tools");
+    }
 
     private String url(String path) {
         return "http://localhost:" + port + path;
     }
 
     private String authorizeUrl(String resource, String codeChallenge) {
-        String u = url("/oauth2/authorize?response_type=code&client_id=" + AGENT_CLIENT_ID
+        String u = url("/oauth2/authorize?response_type=code&client_id=" + clientId
                 + "&redirect_uri=" + URLEncoder.encode(AGENT_REDIRECT_URI, StandardCharsets.UTF_8)
                 + "&scope=" + URLEncoder.encode("mcp:tools", StandardCharsets.UTF_8)
                 + "&state=xyz"
@@ -66,11 +69,12 @@ class McpResourceIndicatorTests {
         String verifier = "a-strong-random-verifier-value-with-43-to-128-chars-0123456789";
         String challenge = TestHttp.s256(verifier);
 
-        // 1. Authorize as acct-123 (no resource param) -> redirect with code
+        // 1. Authorize as acct-123 (no resource param) -> consent -> redirect with code
         HttpResponse<String> authorize =
                 TestHttp.get(client, authorizeUrl(null, challenge), "X-Account-Id", "acct-123");
-        assertThat(authorize.statusCode()).isEqualTo(302);
-        String code = TestHttp.parseQuery(authorize.headers().firstValue("Location").orElseThrow()).get("code");
+        HttpResponse<String> consent = TestHttp.approveConsent(client, url(""), authorize, "acct-123");
+        assertThat(consent.statusCode()).isEqualTo(302);
+        String code = TestHttp.parseQuery(consent.headers().firstValue("Location").orElseThrow()).get("code");
         assertThat(code).isNotBlank();
 
         // 2. Exchange code + verifier for tokens
@@ -78,14 +82,14 @@ class McpResourceIndicatorTests {
         tokenParams.put("grant_type", "authorization_code");
         tokenParams.put("code", code);
         tokenParams.put("redirect_uri", AGENT_REDIRECT_URI);
-        tokenParams.put("client_id", AGENT_CLIENT_ID);
+        tokenParams.put("client_id", clientId);
         tokenParams.put("code_verifier", verifier);
 
         HttpResponse<String> token = TestHttp.postForm(client, url("/oauth2/token"), tokenParams);
         assertThat(token.statusCode()).isEqualTo(200);
 
         // 3. The JWT access token's `aud` must be the MCP resource (RFC 8707 binding)
-        assertThat(jwtAud(token.body())).isEqualTo(properties.getMcp().getResource());
+        assertThat(TestJwt.aud(token.body())).isEqualTo(properties.getMcp().getResource());
     }
 
     @Test
@@ -93,9 +97,10 @@ class McpResourceIndicatorTests {
         HttpResponse<String> authorize = TestHttp.get(client,
                 authorizeUrl(properties.getMcp().getResource(), "challenge-value"),
                 "X-Account-Id", "acct-123");
+        HttpResponse<String> consent = TestHttp.approveConsent(client, url(""), authorize, "acct-123");
 
-        assertThat(authorize.statusCode()).isEqualTo(302);
-        assertThat(authorize.headers().firstValue("Location").orElseThrow()).contains("code=");
+        assertThat(consent.statusCode()).isEqualTo(302);
+        assertThat(consent.headers().firstValue("Location").orElseThrow()).contains("code=");
     }
 
     @Test
@@ -104,20 +109,11 @@ class McpResourceIndicatorTests {
                 authorizeUrl("http://evil.example/mcp", "challenge-value"),
                 "X-Account-Id", "acct-123");
 
-        // The failure handler redirects the error back to the registered redirect_uri.
+        // The failure handler redirects the error back to the registered redirect_uri — before any
+        // consent step (resource validation happens when the authorize request is converted).
         assertThat(authorize.statusCode()).isEqualTo(302);
         String location = authorize.headers().firstValue("Location").orElseThrow();
         assertThat(location).startsWith(AGENT_REDIRECT_URI);
         assertThat(location).contains("error=invalid_target");
-    }
-
-    /** Decodes the {@code aud} claim from the {@code access_token} in a token-endpoint response. */
-    private static String jwtAud(String tokenJson) throws Exception {
-        String accessToken = MAPPER.readTree(new StringReader(tokenJson)).get("access_token").asString();
-        String payload = accessToken.split("\\.")[1];
-        String claimsJson = new String(Base64.getUrlDecoder().decode(payload), StandardCharsets.UTF_8);
-        JsonNode claims = MAPPER.readTree(new StringReader(claimsJson));
-        JsonNode aud = claims.get("aud");
-        return aud.isArray() ? aud.get(0).asString() : aud.asString();
     }
 }

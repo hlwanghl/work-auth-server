@@ -1,4 +1,4 @@
-package com.work.authserver.security;
+package com.work.authserver.mcp;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.Authentication;
@@ -20,7 +20,7 @@ import java.util.Set;
  * default authorize-request converter and rejects a {@code resource} value that is not one of the
  * allowed resources (the configured MCP resource), throwing {@code invalid_target}. A missing
  * {@code resource} is allowed (some clients omit it); the token's {@code aud} is stamped regardless
- * — see {@code AuthorizationServerConfig#mcpAudienceTokenCustomizer}.
+ * — see {@link McpAudienceTokenCustomizer}.
  *
  * <p>Comparison is <b>origin-normalized</b>: {@code http://host:port} and {@code http://host:port/} are
  * the same resource (RFC 3986 — an empty path equals {@code /}), so a generic client that normalizes
@@ -29,13 +29,13 @@ import java.util.Set;
  * <p>Thrown errors are handled by the authorization-server failure handler, which redirects the
  * error back to the client's {@code redirect_uri} (when valid) as {@code error=invalid_target}.
  */
-public class McpResourceIndicatorAuthenticationConverter implements AuthenticationConverter {
+public class ResourceIndicatorAuthenticationConverter implements AuthenticationConverter {
 
     private final AuthenticationConverter delegate =
             new OAuth2AuthorizationCodeRequestAuthenticationConverter();
     private final Set<String> allowedResources;
 
-    public McpResourceIndicatorAuthenticationConverter(Collection<String> allowedResources) {
+    public ResourceIndicatorAuthenticationConverter(Collection<String> allowedResources) {
         this.allowedResources = new HashSet<>();
         if (allowedResources != null) {
             for (String resource : allowedResources) {

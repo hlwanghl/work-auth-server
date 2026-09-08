@@ -1,12 +1,9 @@
-package com.work.authserver.security;
+package com.work.authserver.identity;
 
-import com.work.authserver.user.Account;
-import com.work.authserver.user.AccountService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -46,8 +43,6 @@ public class AccountIdHeaderAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private void authenticate(Account account) {
-        var authentication = new UsernamePasswordAuthenticationToken(
-                account, null, account.getAuthorities());
-        SecurityContextHolder.getContext().setAuthentication(authentication);
+        SecurityContextHolder.getContext().setAuthentication(new AccountAuthentication(account));
     }
 }

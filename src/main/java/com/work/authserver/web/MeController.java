@@ -1,6 +1,6 @@
 package com.work.authserver.web;
 
-import com.work.authserver.user.Account;
+import com.work.authserver.identity.Account;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;

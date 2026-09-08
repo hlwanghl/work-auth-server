@@ -13,7 +13,6 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -22,7 +21,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * RFC 7591 Dynamic Client Registration, end-to-end over real HTTP: an agent registers a public
  * (PKCE) client at {@code /oauth2/register} and then completes the full authorization-code + PKCE
- * flow (with the RFC 8707 {@code resource} parameter) using that dynamically-registered client.
+ * flow — authorize, explicit consent (FR-5; dynamically-registered clients require consent), token
+ * exchange, with the RFC 8707 {@code resource} parameter — using that dynamically-registered client.
+ * This is also the proof that no static clients are needed (FR-6).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class DcrTests {
@@ -64,7 +65,8 @@ class DcrTests {
         String clientId = jsonField(register.body(), "client_id");
         assertThat(clientId).isNotBlank();
 
-        // 2. Authorize with the dynamic client (PKCE + the MCP resource param), as acct-123.
+        // 2. Authorize with the dynamic client (PKCE + the MCP resource param), as acct-123,
+        //    then approve the consent page (dynamically-registered clients require consent).
         String verifier = "a-strong-random-verifier-value-with-43-to-128-chars-0123456789";
         String challenge = TestHttp.s256(verifier);
         String authorize = url("/oauth2/authorize?response_type=code&client_id=" + clientId
@@ -76,8 +78,10 @@ class DcrTests {
                 + "&resource=" + URLEncoder.encode(properties.getMcp().getResource(), StandardCharsets.UTF_8));
         HttpResponse<String> authorizeResponse =
                 TestHttp.get(client, authorize, "X-Account-Id", "acct-123");
-        assertThat(authorizeResponse.statusCode()).isEqualTo(302);
-        String code = TestHttp.parseQuery(authorizeResponse.headers().firstValue("Location").orElseThrow()).get("code");
+        HttpResponse<String> consent =
+                TestHttp.approveConsent(client, url(""), authorizeResponse, "acct-123");
+        assertThat(consent.statusCode()).isEqualTo(302);
+        String code = TestHttp.parseQuery(consent.headers().firstValue("Location").orElseThrow()).get("code");
         assertThat(code).isNotBlank();
 
         // 3. Exchange the code + PKCE verifier for tokens.
@@ -92,7 +96,7 @@ class DcrTests {
         assertThat(token.statusCode()).isEqualTo(200);
 
         // 4. The token's audience is the MCP resource (RFC 8707), same as for static clients.
-        assertThat(jwtAud(token.body())).isEqualTo(properties.getMcp().getResource());
+        assertThat(TestJwt.aud(token.body())).isEqualTo(properties.getMcp().getResource());
     }
 
     private static String jsonField(String json, String field) throws Exception {
@@ -121,14 +125,5 @@ class DcrTests {
         HttpResponse<String> register = TestHttp.postJson(client, url("/oauth2/register"), registration);
         assertThat(register.statusCode()).isEqualTo(400);
         assertThat(register.body()).contains("invalid_client_metadata");
-    }
-
-    private static String jwtAud(String tokenJson) throws Exception {
-        String accessToken = MAPPER.readTree(new StringReader(tokenJson)).get("access_token").asString();
-        String payload = accessToken.split("\\.")[1];
-        JsonNode claims = MAPPER.readTree(new StringReader(
-                new String(Base64.getUrlDecoder().decode(payload), StandardCharsets.UTF_8)));
-        JsonNode aud = claims.get("aud");
-        return aud.isArray() ? aud.get(0).asString() : aud.asString();
     }
 }
