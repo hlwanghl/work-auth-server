@@ -5,10 +5,17 @@ import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import com.work.authserver.client.ClientCredentialVerifier;
 import com.work.authserver.client.ExpiringRegisteredClientRepository;
+import com.work.authserver.client.ExternalClientSecretPasswordEncoder;
+import com.work.authserver.client.PreRegisteredClients;
+import com.work.authserver.client.RestClientCredentialVerifier;
 import com.work.authserver.mcp.McpAudienceTokenCustomizer;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
@@ -31,14 +38,40 @@ import java.util.UUID;
 public class AuthorizationServerConfig {
 
     /**
-     * The open-DCR client store: starts empty — this server ships NO static clients, every client is
-     * an MCP client that self-registered (FR-6/FR-7) — in memory, with idle eviction (FR-9). Swap for
-     * a persistent (JDBC) {@link RegisteredClientRepository} in production — registrations and
-     * refresh tokens are lost on restart today (docs/architecture.md §9).
+     * Starts empty for MCP clients — all of them arrive via open DCR (FR-6/FR-7). Pre-registered
+     * website apps (FR-15, from {@code app.web-clients}) are seeded and exempt from idle eviction.
+     * In memory: swap for a persistent (JDBC) {@link RegisteredClientRepository} in production —
+     * registrations and refresh tokens are lost on restart today (docs/architecture.md §9).
      */
     @Bean
     public RegisteredClientRepository registeredClientRepository(AppProperties properties) {
-        return new ExpiringRegisteredClientRepository(properties.getDcr().getEvictUnusedAfter());
+        return new ExpiringRegisteredClientRepository(
+                PreRegisteredClients.from(properties), properties.getDcr().getEvictUnusedAfter());
+    }
+
+    /**
+     * The external client registry (FR-16): only present when {@code app.client-registry.enabled=true}.
+     * Absent in dev, where secrets are compared locally (see {@link #clientSecretPasswordEncoder}).
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "app.client-registry", name = "enabled", havingValue = "true")
+    public ClientCredentialVerifier restClientCredentialVerifier(AppProperties properties) {
+        if (properties.getClientRegistry().getUrl() == null || properties.getClientRegistry().getUrl().isBlank()) {
+            throw new IllegalStateException("app.client-registry.url is required when enabled");
+        }
+        return new RestClientCredentialVerifier(properties.getClientRegistry().getUrl());
+    }
+
+    /**
+     * How stored client secrets are checked: dev mode compares the configured secret verbatim
+     * ({@code {noop}}), external-registry mode delegates to {@link ClientCredentialVerifier}
+     * ({@code {ext}}) — see {@link ExternalClientSecretPasswordEncoder}.
+     */
+    @Bean
+    public PasswordEncoder clientSecretPasswordEncoder(AppProperties properties,
+                                                       ObjectProvider<ClientCredentialVerifier> verifier) {
+        return new ExternalClientSecretPasswordEncoder(
+                properties.getClientRegistry().isEnabled() ? verifier.getObject() : null);
     }
 
     /**

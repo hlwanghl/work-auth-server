@@ -33,9 +33,27 @@ app:
   mcp:
     resource: http://localhost:8081
   # Dynamic Client Registration (RFC 7591) housekeeping: idle dynamic registrations are reaped after
-  # this (a registration read in the meantime stays alive); the seeded static clients are never evicted.
+  # this (a registration read in the meantime stays alive); pre-registered website apps are exempt.
   dcr:
     evict-unused-after: 1h
+  # Website apps (FR-15): pre-registered confidential clients, NOT via open DCR. Sign-in runs the
+  # OAuth 2.1 standard authorization code + PKCE + consent flow — the id+secret only AUTHENTICATES
+  # the client when redeeming the user's code (no client_credentials grant). Dev-grade: secrets are
+  # in config verbatim — production verifies them via the external client registry below
+  # (docs/architecture.md §9).
+  web-clients:
+    - client-id: web-app-demo
+      client-secret: web-demo-secret
+      client-name: Demo Website App
+      redirect-uris:
+        - http://127.0.0.1:9090/login/oauth2/code/web-app-demo
+      scopes: profile
+  # External client-credential verification (FR-16). When enabled, the client secret is verified by
+  # POSTing {clientId, clientSecret} to the URL; a 2xx response carrying an accountId means valid,
+  # anything else is invalid_client. The app.web-clients[].client-secret values are then unused.
+  client-registry:
+    enabled: false
+    # url: http://client-registry.internal/api/verify
 
 logging:
   level:

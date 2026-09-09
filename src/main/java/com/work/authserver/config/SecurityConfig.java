@@ -12,9 +12,13 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.authorization.authentication.ClientSecretAuthenticationProvider;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AndRequestMatcher;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 
 import java.util.List;
@@ -38,12 +42,15 @@ public class SecurityConfig {
     private final AppProperties properties;
     private final AccountService accountService;
     private final AuthorizationServerSettings authorizationServerSettings;
+    private final PasswordEncoder clientSecretPasswordEncoder;
 
     public SecurityConfig(AppProperties properties, AccountService accountService,
-                          AuthorizationServerSettings authorizationServerSettings) {
+                          AuthorizationServerSettings authorizationServerSettings,
+                          PasswordEncoder clientSecretPasswordEncoder) {
         this.properties = properties;
         this.accountService = accountService;
         this.authorizationServerSettings = authorizationServerSettings;
+        this.clientSecretPasswordEncoder = clientSecretPasswordEncoder;
     }
 
     private AccountIdHeaderAuthenticationFilter accountIdHeaderFilter() {
@@ -87,7 +94,17 @@ public class SecurityConfig {
                             // self-declared scopes) is client/DcrRegistrationPolicy.
                             .clientRegistrationEndpoint(clientRegistration -> clientRegistration
                                     .openRegistrationAllowed(true)
-                                    .authenticationProviders(DcrRegistrationPolicy.openRegistrationValidators()));
+                                    .authenticationProviders(DcrRegistrationPolicy.openRegistrationValidators()))
+                            // Client-secret verification (FR-16): swap the PasswordEncoder of the
+                            // built-in provider — stored secrets are {noop}<secret> (dev, verbatim
+                            // compare) or {ext}<clientId> (external registry REST API decides).
+                            .clientAuthentication(clientAuthentication -> clientAuthentication
+                                    .authenticationProviders(providers -> providers.stream()
+                                            .filter(ClientSecretAuthenticationProvider.class::isInstance)
+                                            .map(ClientSecretAuthenticationProvider.class::cast)
+                                            .findFirst()
+                                            .ifPresent(provider -> provider
+                                                    .setPasswordEncoder(clientSecretPasswordEncoder))));
                     // Restrict this chain to the authorization-server protocol endpoints.
                     // OIDC is intentionally NOT enabled -> pure OAuth 2.1.
                     http.securityMatcher(authorizationServer.getEndpointsMatcher());
@@ -106,11 +123,16 @@ public class SecurityConfig {
                 .addFilterAfter(accountIdHeaderFilter(), SecurityContextHolderFilter.class)
                 .exceptionHandling(exceptions -> exceptions
                         // Browser (text/html) requests to /oauth2/authorize that are unauthenticated
-                        // are redirected to the external SSO; programmatic requests (e.g. the token
-                        // endpoint) keep the default OAuth2 error entry point.
+                        // are redirected to the external SSO. The entry point is scoped to that path:
+                        // it is the only user-facing endpoint on this chain — every other protocol
+                        // endpoint (token, introspect, revoke) is client-authenticated and must keep
+                        // the protocol error semantics (e.g. 401 invalid_client), not redirect to a
+                        // login page. Programmatic requests to authorize keep the default entry point.
                         .defaultAuthenticationEntryPointFor(
                                 ssoEntryPoint(),
-                                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)));
+                                new AndRequestMatcher(
+                                        PathPatternRequestMatcher.withDefaults().matcher("/oauth2/authorize"),
+                                        new MediaTypeRequestMatcher(MediaType.TEXT_HTML))));
 
         return http.build();
     }

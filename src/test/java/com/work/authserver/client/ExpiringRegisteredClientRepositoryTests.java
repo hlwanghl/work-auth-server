@@ -6,14 +6,16 @@ import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Plain unit test of the eviction rule with an injectable clock (no Spring context, no sleeping).
- * Pins: the repository starts empty (no static clients, FR-6 in docs/requirements.md); an idle client
- * is reaped past the TTL; a read refreshes {@code lastSeen} so an actively-used client survives.
+ * Pins: the repository starts empty for MCP clients (FR-6 in docs/requirements.md); an idle client
+ * is reaped past the TTL; a read refreshes {@code lastSeen} so an actively-used client survives;
+ * pre-registered website apps (FR-15) are whitelisted and never reaped.
  */
 class ExpiringRegisteredClientRepositoryTests {
 
@@ -50,6 +52,19 @@ class ExpiringRegisteredClientRepositoryTests {
 
         assertThat(repo.findById("id-dyn")).isNull();
         assertThat(repo.findByClientId("dynamic-1")).isNull();
+    }
+
+    @Test
+    void preRegisteredWebsiteClientIsNeverEvicted() {
+        ExpiringRegisteredClientRepository repo = new ExpiringRegisteredClientRepository(
+                List.of(client("id-pre", "web-app-demo")), Duration.ofMillis(100), millis::get);
+
+        // Way past the TTL and never read in between — a pre-registered site must survive idleness.
+        millis.addAndGet(10_000);
+        repo.sweep();
+
+        assertThat(repo.findById("id-pre")).isNotNull();
+        assertThat(repo.findByClientId("web-app-demo")).isNotNull();
     }
 
     @Test

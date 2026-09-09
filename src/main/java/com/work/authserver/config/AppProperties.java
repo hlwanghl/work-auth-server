@@ -3,6 +3,8 @@ package com.work.authserver.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Application configuration for the header-based authentication model and the external SSO login.
@@ -19,6 +21,11 @@ import java.time.Duration;
  *     resource: http://localhost:8081
  *   dcr:
  *     evict-unused-after: 1h
+ *   web-clients:
+ *     - client-id: web-app-demo
+ *       client-secret: ...
+ *       redirect-uris: ["http://127.0.0.1:9090/callback"]
+ *       scopes: [profile]
  * </pre>
  */
 @ConfigurationProperties("app")
@@ -39,6 +46,8 @@ public class AppProperties {
     private Sso sso = new Sso();
     private Mcp mcp = new Mcp();
     private Dcr dcr = new Dcr();
+    private List<WebApp> webClients = new ArrayList<>();
+    private ClientRegistry clientRegistry = new ClientRegistry();
 
     public String getIssuer() {
         return issuer;
@@ -78,6 +87,22 @@ public class AppProperties {
 
     public void setDcr(Dcr dcr) {
         this.dcr = dcr;
+    }
+
+    public List<WebApp> getWebClients() {
+        return webClients;
+    }
+
+    public void setWebClients(List<WebApp> webClients) {
+        this.webClients = webClients;
+    }
+
+    public ClientRegistry getClientRegistry() {
+        return clientRegistry;
+    }
+
+    public void setClientRegistry(ClientRegistry clientRegistry) {
+        this.clientRegistry = clientRegistry;
     }
 
     public static class Header {
@@ -154,8 +179,9 @@ public class AppProperties {
     /**
      * Dynamic Client Registration (RFC 7591) housekeeping. Open DCR stays open in prod (agent-native),
      * so the client store self-cleans: idle dynamic registrations are reaped after
-     * {@link #evictUnusedAfter}; the seeded static demo clients are never evicted. See
-     * {@code ExpiringRegisteredClientRepository}.
+     * {@link #evictUnusedAfter}. Pre-registered website-app clients ({@code app.web-clients}) are
+     * exempt — a low-traffic site must not be reaped for being idle. See
+     * {@code client/ExpiringRegisteredClientRepository}.
      */
     public static class Dcr {
 
@@ -172,6 +198,104 @@ public class AppProperties {
 
         public void setEvictUnusedAfter(Duration evictUnusedAfter) {
             this.evictUnusedAfter = evictUnusedAfter;
+        }
+    }
+
+    /**
+     * External client-credential verification (FR-16 in docs/requirements.md). When enabled, a
+     * website app's secret is NOT compared against the configured value: the (clientId, clientSecret)
+     * pair is POSTed to the registry's URL and a 2xx response carrying an accountId means valid.
+     * Any failure (non-2xx, missing accountId, network error) is an authentication failure.
+     */
+    public static class ClientRegistry {
+
+        /** Whether secret verification is delegated to the external REST API (dev default: off). */
+        private boolean enabled = false;
+
+        /** The verification endpoint URL; required when {@link #enabled}. */
+        private String url;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
+        }
+    }
+
+    /**
+     * A pre-registered website app (FR-15 in docs/requirements.md): a confidential client registered
+     * ahead of time via configuration instead of open DCR. Sign-in runs the OAuth 2.1 standard
+     * authorization code + PKCE + consent flow — the id+secret only authenticates the client when it
+     * redeems the user's code (no client_credentials grant). Dev-grade: secrets live in config
+     * verbatim — production needs an admin surface, hashed secrets and persistence
+     * (docs/architecture.md §9), or external verification ({@code client-registry}), in which case
+     * the configured secret is not used at all.
+     */
+    public static class WebApp {
+
+        /** The pre-registered client_id. */
+        private String clientId;
+
+        /** The pre-registered client secret (used as-is by the in-memory store). */
+        private String clientSecret;
+
+        /** Human-readable name; defaults to the client_id. */
+        private String clientName;
+
+        /** Registered redirect URIs for the authorization-code flow. */
+        private List<String> redirectUris = new ArrayList<>();
+
+        /** Scopes this web app may request. */
+        private List<String> scopes = new ArrayList<>();
+
+        public String getClientId() {
+            return clientId;
+        }
+
+        public void setClientId(String clientId) {
+            this.clientId = clientId;
+        }
+
+        public String getClientSecret() {
+            return clientSecret;
+        }
+
+        public void setClientSecret(String clientSecret) {
+            this.clientSecret = clientSecret;
+        }
+
+        public String getClientName() {
+            return clientName;
+        }
+
+        public void setClientName(String clientName) {
+            this.clientName = clientName;
+        }
+
+        public List<String> getRedirectUris() {
+            return redirectUris;
+        }
+
+        public void setRedirectUris(List<String> redirectUris) {
+            this.redirectUris = redirectUris;
+        }
+
+        public List<String> getScopes() {
+            return scopes;
+        }
+
+        public void setScopes(List<String> scopes) {
+            this.scopes = scopes;
         }
     }
 }

@@ -127,13 +127,22 @@ final class TestHttp {
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
 
-    static HttpResponse<String> postForm(HttpClient client, String url, Map<String, String> form) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
+    static HttpResponse<String> postForm(HttpClient client, String url, Map<String, String> form,
+                                         String... headers) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(formBody(form), StandardCharsets.UTF_8))
-                .build();
-        return client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                .POST(HttpRequest.BodyPublishers.ofString(formBody(form), StandardCharsets.UTF_8));
+        for (int i = 0; i + 1 < headers.length; i += 2) {
+            builder.header(headers[i], headers[i + 1]);
+        }
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    /** HTTP Basic authorization header value for client-secret authentication. */
+    static String basicAuth(String username, String secret) {
+        String credentials = username + ":" + secret;
+        return "Basic " + Base64.getEncoder().encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
     }
 
     static HttpResponse<String> postJson(HttpClient client, String url, String jsonBody) throws Exception {

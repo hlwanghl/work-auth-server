@@ -20,8 +20,11 @@
 ```
 
 Spring Boot 4.1 / Spring Security 7.1（授权服务器模块已并入 Spring Security 7.0+）。
-纯 OAuth 2.1：公共客户端、授权码 + PKCE、无 OIDC；**所有客户端经 DCR 动态注册（不预置），
-授权一律经 consent 页面由用户显式同意**。
+纯 OAuth 2.1，授权码一律强制 PKCE、一律经 consent 页面由用户显式同意/拒绝。两类客户端：
+
+- **MCP 客户端**（AI agent）：公共客户端，开放 DCR 自注册（不预置），空闲回收；
+- **网站应用**（第三方网站）：预注册机密客户端（`app.web-clients` 配置），用户接入走
+  OAuth 2.1 标准的授权码 + PKCE + consent（approve/deny），永不空闲回收。
 
 ## 2. 需求 → 机制映射
 
@@ -31,15 +34,17 @@ Spring Boot 4.1 / Spring Security 7.1（授权服务器模块已并入 Spring Se
 | FR-2/3 SSO 跳转 | HTML 请求的认证入口点，`return_to` 仅由请求推导 | `identity/SsoRedirectAuthenticationEntryPoint` |
 | FR-4 授权码+PKCE | 公共客户端 `requireProofKey`；Spring AS 协议端点 | `config/SecurityConfig`（链 1） |
 | FR-5 用户显式同意/拒绝 | `consentPage("/oauth2/consent")` + consent 页面（同意提交 scope；拒绝提交空 scope = 内建 deny 语义）；DCR 注册的客户端内建 `requireAuthorizationConsent=true` | `web/ConsentController` + `config/SecurityConfig` |
-| FR-6 不预置客户端 | 客户端仓库空启动，唯一来源是 DCR | `config/AuthorizationServerConfig`（仓库 bean） |
+| FR-6 MCP 客户端不预置 | 客户端仓库对 DCR 空启动（网站应用种子除外），MCP 客户端唯一来源是开放 DCR | `config/AuthorizationServerConfig`（仓库 bean） |
 | FR-7 开放 DCR | `openRegistrationAllowed(true)` + 匿名放行 | `config/SecurityConfig`（链 1） |
 | FR-8 注册零出网 | DCR 校验器链：redirect_uri 严格 → 拒 `jwks_uri` → scope 自声明 | `client/DcrRegistrationPolicy` |
-| FR-9 空闲回收 | 按 `lastSeen` 驱逐的 `RegisteredClientRepository` 装饰器，定时 sweep | `client/ExpiringRegisteredClientRepository` |
+| FR-9 空闲回收 | 按 `lastSeen` 驱逐的 `RegisteredClientRepository` 装饰器，定时 sweep；预注册网站客户端白名单豁免 | `client/ExpiringRegisteredClientRepository` |
 | FR-10 resource 校验 | authorize 请求转换器包装默认实现，归一化比对允许集 | `mcp/ResourceIndicatorAuthenticationConverter` |
 | FR-11 aud 盖章 | JWT token customizer | `mcp/McpAudienceTokenCustomizer` |
 | FR-12 issuer 硬设 | `AuthorizationServerSettings.issuer = app.issuer` | `config/AuthorizationServerConfig` |
 | FR-13 元数据/JWKS | Spring AS 自动发布 | （无自有代码） |
 | FR-14 /api/me | 演示端点 | `web/MeController` |
+| FR-15 网站应用（预注册机密客户端） | 配置种子 → 机密客户端（HTTP Basic + PKCE 强制 + consent，auth code/refresh），白名单豁免空闲回收 | `client/PreRegisteredClients` + `client/ExpiringRegisteredClientRepository` |
+| FR-16 外部客户端凭证校验 | 存储侧标记 `{ext}<clientId>` + 定制 `PasswordEncoder` 委托 REST API（dev 为 `{noop}` 本地比对），挂在内建 `ClientSecretAuthenticationProvider` 上 | `client/ClientCredentialVerifier`、`client/RestClientCredentialVerifier`、`client/ExternalClientSecretPasswordEncoder` |
 | NFR-1 无状态 | 两条链 `SessionCreationPolicy.STATELESS`；consent 状态存于 authorization/consent service | `config/SecurityConfig` |
 | NFR-3 存储可替换 | 账户/客户端/授权/同意/密钥均以接口注入 | `identity/AccountService`、`RegisteredClientRepository`、`OAuth2AuthorizationService`、`OAuth2AuthorizationConsentService`、`JWKSource` |
 
@@ -61,9 +66,13 @@ com.work.authserver
 │   ├── InMemoryAccountService.java   内存实现：acct-123(alice)、acct-456(bob)
 │   ├── AccountIdHeaderAuthenticationFilter.java
 │   └── SsoRedirectAuthenticationEntryPoint.java
-├── client/                           —— 客户端域：开放 DCR 策略、注册存储（FR-7/8/9）
+├── client/                           —— 客户端域：预注册种子、DCR 策略、凭证校验、注册存储（FR-6/7/8/9/15/16）
+│   ├── PreRegisteredClients.java     网站应用配置（app.web-clients）→ 机密 RegisteredClient
+│   ├── ClientCredentialVerifier.java 外部凭证校验接口（VerifiedClient 契约：accountId 等）
+│   ├── RestClientCredentialVerifier.java  REST 实现（POST clientId+clientSecret → accountId）
+│   ├── ExternalClientSecretPasswordEncoder.java  {noop} 本地比对 / {ext} 委托外部校验
 │   ├── DcrRegistrationPolicy.java    开放注册校验器链（含 jwks_uri 拒绝）
-│   └── ExpiringRegisteredClientRepository.java  空启动、空闲回收的内存客户端仓库
+│   └── ExpiringRegisteredClientRepository.java  空启动、空闲回收（预注册白名单豁免）的内存客户端仓库
 ├── mcp/                              —— MCP/RFC 8707 覆盖层（FR-10/11）
 │   ├── ResourceIndicatorAuthenticationConverter.java
 │   └── McpAudienceTokenCustomizer.java
@@ -87,8 +96,10 @@ com.work.authserver
 1. `SecurityContextHolderFilter` 之后挂 `AccountIdHeaderAuthenticationFilter`：有头且账号存在 → 置
    `AccountAuthentication`；否则保持匿名。
 2. `AuthorizationFilter`：`/oauth2/register` 显式 `permitAll`（开放注册，FR-7），其余 `authenticated()`。
-3. 匿名 + 浏览器请求 → `SsoRedirectAuthenticationEntryPoint` 302 到 SSO 带 `return_to`（FR-2）；
-   程序化请求走默认 OAuth2 错误入口点。
+3. 匿名 + `/oauth2/authorize` 上的浏览器请求（text/html）→ `SsoRedirectAuthenticationEntryPoint`
+   302 到 SSO 带 `return_to`（FR-2）。入口点按路径收窄到 authorize——这是本链唯一的用户侧端点；
+   其余协议端点（token/introspect/revoke）是客户端认证的，保持协议错误语义（如 401 invalid_client），
+   不做登录重定向。
 4. authorize 端点定制：
    - 请求转换器 = `ResourceIndicatorAuthenticationConverter`（FR-10）；
    - `consentPage("/oauth2/consent")`（FR-5）——DCR 注册的客户端被内建地设为
@@ -96,7 +107,10 @@ com.work.authserver
      （POST `/oauth2/authorize`，`client_id`+`state`+`scope`）由 Spring AS 内建的 consent
      转换器/provider 处理。
 5. register 端点定制：开放注册 + `DcrRegistrationPolicy` 校验器链（FR-7/8）。
-6. `STATELESS`（NFR-1）。
+6. 客户端认证定制（FR-16）：找到内建 `ClientSecretAuthenticationProvider`，把它比对 secret 所用的
+   `PasswordEncoder` 换成 `ExternalClientSecretPasswordEncoder`——存储为 `{noop}…` 时本地比对（dev），
+   为 `{ext}<clientId>` 时委托外部 REST API（校验失败即 `invalid_client`）。
+7. `STATELESS`（NFR-1）。
 
 **链 2（@Order(2)）** — 其余一切（`/api/me`、`/oauth2/consent`、`/error`）：
 
@@ -151,6 +165,21 @@ agent ──POST /oauth2/register（JSON，token_endpoint_auth_method=none）─
   空闲 > app.dcr.evict-unused-after 且无读触达 → 定时 sweep 回收（FR-9；仓库内所有客户端同规则）
 ```
 
+### 5.4 网站应用（预注册机密客户端）
+
+```
+# 用户接入：OAuth 2.1 标准的授权码 + PKCE + consent（机密客户端同样强制 PKCE 与 consent）
+Browser ──GET /oauth2/authorize?client_id=web-app&…&code_challenge=…──▶（网关注入 X-Account-Id）
+  └─ consent（同意/拒绝，同 5.1）→ 302 redirect_uri?code=…
+site-backend ──POST /oauth2/token（code + code_verifier，
+               Authorization: Basic(client_id, client_secret)）──▶ {access_token, refresh_token}
+               （token 是用户的：sub=<用户账号>；id+secret 只是客户端认证，证明"我是预注册网站"）
+```
+
+预注册客户端在仓库中带白名单标记，定时 sweep 不回收（FR-9）；注册来源是 `app.web-clients`
+配置（FR-15；生产演进为管理端 + 持久化 + secret 哈希，见 §9）。secret 的比对（dev 本地 / 生产
+外部 REST API，FR-16）发生在客户端认证阶段，两条路径的协议行为完全一致。
+
 ## 6. 安全不变量
 
 1. **无状态**：任何链上不允许创建/复用会话；身份只来自当前请求的头。consent 事务以 consent state
@@ -172,8 +201,12 @@ agent ──POST /oauth2/register（JSON，token_endpoint_auth_method=none）─
 | `McpResourceIndicatorTests` | 真实端口集成 | FR-10（允许/拒绝）、FR-11（aud） |
 | `TokenIssuerTests` | 真实端口集成 | FR-12（iss 硬设）、FR-11 |
 | `DcrTests` | 真实端口集成 | FR-6/7（注册→consent→完整流）、FR-8（jwks_uri 拒绝）、FR-11 |
+| `WebAppClientFlowTests` | 真实端口集成 | FR-15（secret 认证、机密客户端强制 PKCE、consent、refresh_token） |
+| `ExternalClientRegistryTests` | 真实端口集成（HTTP stub） | FR-16（外部 API 裁决凭证、配置 secret 被忽略、错误回传、用户流照常） |
 | `SecurityFilterChainTests` | 真实端口集成 | FR-1/2（头认证 vs SSO 跳转） |
-| `ExpiringRegisteredClientRepositoryTests` | 纯单元（注入时钟） | FR-9 |
+| `ExpiringRegisteredClientRepositoryTests` | 纯单元（注入时钟） | FR-9（空闲回收；预注册白名单豁免） |
+| `PreRegisteredClientsTests` | 纯单元 | FR-15（配置 → 机密客户端不变量；两种 secret 存储模式） |
+| `ExternalClientSecretPasswordEncoderTests` / `RestClientCredentialVerifierTests` | 纯单元 | FR-16（{noop}/{ext} 分派、REST 成功/失败/不可达） |
 | `ResourceIndicatorAuthenticationConverterTests` | 纯单元 | FR-10 归一化/拒绝/关闭 |
 | `SsoRedirectAuthenticationEntryPointTests` | 纯单元 | FR-2/3 Location 构造 |
 
@@ -189,7 +222,10 @@ agent ──POST /oauth2/register（JSON，token_endpoint_auth_method=none）─
 | `app.sso.login-url` | `https://sso.example.com/login` | 未登录跳转目标（FR-2；dev 指向网关 mock-SSO） |
 | `app.sso.return-to-param` | `return_to` | 回跳参数名（FR-2） |
 | `app.mcp.resource` | `http://localhost:8081` | 允许的 `resource` + token `aud`（FR-10/11；留空关闭校验） |
-| `app.dcr.evict-unused-after` | `1h` | 空闲注册回收时长（FR-9） |
+| `app.dcr.evict-unused-after` | `1h` | 空闲注册回收时长（FR-9；预注册网站客户端豁免） |
+| `app.web-clients` | dev 内置 `web-app-demo` | 预注册网站应用列表（client-id/secret/name/redirect-uris/scopes，FR-15） |
+| `app.client-registry.enabled` | `false` | 启用外部客户端凭证校验（FR-16）；启用后 `app.web-clients[].client-secret` 不再参与比对 |
+| `app.client-registry.url` | （无） | 校验 API 地址（enabled 时必填）：POST {clientId, clientSecret} → 2xx + accountId 即有效 |
 
 服务器端口 `:9000`、`forward-headers-strategy: native`（网关后 TLS 终结时修正 scheme）见 `application.yml`。
 
@@ -198,6 +234,8 @@ agent ──POST /oauth2/register（JSON，token_endpoint_auth_method=none）─
 | 主题 | 现状 | 演进 |
 |------|------|------|
 | 持久化 | 客户端/授权/同意/密钥全内存，重启即失（refresh token、已同意记录、动态注册丢失） | 换 JDBC `RegisteredClientRepository`/`OAuth2AuthorizationService`/`OAuth2AuthorizationConsentService`/持久 `JWKSource`（NFR-3 接口已就位） |
+| 网站应用 secret | 以明文存于 `app.web-clients` 配置（dev 姿态），无管理界面 | 生产：注册管理端 + secret 哈希存储（随持久化一起落地）；或直接启用外部校验（FR-16），secret 完全由外部 API 持有 |
+| accountId 用法 | 外部校验返回的 accountId 暂未写入令牌（仅校验结果契约） | 按需评估：为该客户端的用户令牌加盖"客户端所属账号"claim |
 | 多 resource | `aud` 固定单值 | converter 已按允许集（`Set`）实现；customizer 改为绑 per-request `resource`（需在 authorization 记录中保存该参数） |
 | 真实 SSO | 网关 dev `?account=` 旁路 | 网关侧接签名断言/会话 cookie；本服务不变（信任边界仍是"网关注入的头"） |
 | DCR scope | 自声明 | 换严格 allowlist 校验器（`DcrRegistrationPolicy` 单点修改） |
