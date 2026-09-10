@@ -1,6 +1,7 @@
 package com.work.authserver.config;
 
 import com.work.authserver.client.DcrRegistrationPolicy;
+import com.work.authserver.discovery.DiscoveryMetadataPolicy;
 import com.work.authserver.identity.AccountIdHeaderAuthenticationFilter;
 import com.work.authserver.identity.AccountService;
 import com.work.authserver.identity.SsoRedirectAuthenticationEntryPoint;
@@ -95,6 +96,14 @@ public class SecurityConfig {
                             .clientRegistrationEndpoint(clientRegistration -> clientRegistration
                                     .openRegistrationAllowed(true)
                                     .authenticationProviders(DcrRegistrationPolicy.openRegistrationValidators()))
+                            // RFC 8414 metadata discloses only the enabled capabilities (FR-13,
+                            // minimal exposure): Spring Security hardcodes six client-auth methods
+                            // and four grant types into the discovery document; trim them to the
+                            // grants/auth methods the two client shapes use (discovery/
+                            // DiscoveryMetadataPolicy — DCR enforces the same set, see above).
+                            .authorizationServerMetadataEndpoint(metadata -> metadata
+                                    .authorizationServerMetadataCustomizer(
+                                            DiscoveryMetadataPolicy.advertiseOnlyEnabledCapabilities()))
                             // Client-secret verification (FR-16): swap the PasswordEncoder of the
                             // built-in provider — stored secrets are {noop}<secret> (dev, verbatim
                             // compare) or {ext}<clientId> (external registry REST API decides).

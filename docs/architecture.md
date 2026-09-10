@@ -36,12 +36,12 @@ Spring Boot 4.1 / Spring Security 7.1（授权服务器模块已并入 Spring Se
 | FR-5 用户显式同意/拒绝 | `consentPage("/oauth2/consent")` + consent 页面（同意提交 scope；拒绝提交空 scope = 内建 deny 语义）；DCR 注册的客户端内建 `requireAuthorizationConsent=true` | `web/ConsentController` + `config/SecurityConfig` |
 | FR-6 MCP 客户端不预置 | 客户端仓库对 DCR 空启动（网站应用种子除外），MCP 客户端唯一来源是开放 DCR | `config/AuthorizationServerConfig`（仓库 bean） |
 | FR-7 开放 DCR | `openRegistrationAllowed(true)` + 匿名放行 | `config/SecurityConfig`（链 1） |
-| FR-8 注册零出网 | DCR 校验器链：redirect_uri 严格 → 拒 `jwks_uri` → scope 自声明 | `client/DcrRegistrationPolicy` |
+| FR-8 注册零出网 | DCR 校验器链：redirect_uri 严格 → 拒 `jwks_uri` → scope 自声明 → 仅公共 PKCE 客户端（auth method=none、grant_types 受限） | `client/DcrRegistrationPolicy` |
 | FR-9 空闲回收 | 按 `lastSeen` 驱逐的 `RegisteredClientRepository` 装饰器，定时 sweep；预注册网站客户端白名单豁免 | `client/ExpiringRegisteredClientRepository` |
 | FR-10 resource 校验 | authorize 请求转换器包装默认实现，归一化比对允许集 | `mcp/ResourceIndicatorAuthenticationConverter` |
 | FR-11 aud 盖章 | JWT token customizer | `mcp/McpAudienceTokenCustomizer` |
 | FR-12 issuer 硬设 | `AuthorizationServerSettings.issuer = app.issuer` | `config/AuthorizationServerConfig` |
-| FR-13 元数据/JWKS | Spring AS 自动发布 | （无自有代码） |
+| FR-13 元数据/JWKS | Spring AS 自动发布 + 元数据定制器裁剪为最小暴露（只声明实际启用的 grants/auth methods） | `discovery/DiscoveryMetadataPolicy` |
 | FR-14 /api/me | 演示端点 | `web/MeController` |
 | FR-15 网站应用（预注册机密客户端） | 配置种子 → 机密客户端（HTTP Basic + PKCE 强制 + consent，auth code/refresh），白名单豁免空闲回收 | `client/PreRegisteredClients` + `client/ExpiringRegisteredClientRepository` |
 | FR-16 外部客户端凭证校验 | 存储侧标记 `{ext}<clientId>` + 定制 `PasswordEncoder` 委托 REST API（dev 为 `{noop}` 本地比对），挂在内建 `ClientSecretAuthenticationProvider` 上 | `client/ClientCredentialVerifier`、`client/RestClientCredentialVerifier`、`client/ExternalClientSecretPasswordEncoder` |
@@ -76,6 +76,8 @@ com.work.authserver
 ├── mcp/                              —— MCP/RFC 8707 覆盖层（FR-10/11）
 │   ├── ResourceIndicatorAuthenticationConverter.java
 │   └── McpAudienceTokenCustomizer.java
+├── discovery/                        —— 元数据发布（FR-13）
+│   └── DiscoveryMetadataPolicy.java  RFC 8414 元数据最小暴露（裁掉框架默认多列的 grants/auth methods）
 └── web/
     ├── ConsentController.java        GET /oauth2/consent —— consent 页面（FR-5）
     └── MeController.java             GET /（存活）、GET /api/me（FR-14）
@@ -200,7 +202,8 @@ site-backend ──POST /oauth2/token（code + code_verifier，
 | `ConsentFlowTests` | 真实端口集成 | FR-5（consent 页面重定向、匿名→SSO、页面契约、同意→发码、拒绝→access_denied、拒绝后重新询问、同意按用户+客户端记住） |
 | `McpResourceIndicatorTests` | 真实端口集成 | FR-10（允许/拒绝）、FR-11（aud） |
 | `TokenIssuerTests` | 真实端口集成 | FR-12（iss 硬设）、FR-11 |
-| `DcrTests` | 真实端口集成 | FR-6/7（注册→consent→完整流）、FR-8（jwks_uri 拒绝）、FR-11 |
+| `DcrTests` | 真实端口集成 | FR-6/7（注册→consent→完整流、仅公共客户端：缺省 auth method / `client_credentials` 拒绝）、FR-8（jwks_uri 拒绝）、FR-11 |
+| `DiscoveryMetadataTests` | 真实端口集成 | FR-13（元数据最小暴露：grants/auth methods 恰为启用集） |
 | `WebAppClientFlowTests` | 真实端口集成 | FR-15（secret 认证、机密客户端强制 PKCE、consent、refresh_token） |
 | `ExternalClientRegistryTests` | 真实端口集成（HTTP stub） | FR-16（外部 API 裁决凭证、配置 secret 被忽略、错误回传、用户流照常） |
 | `SecurityFilterChainTests` | 真实端口集成 | FR-1/2（头认证 vs SSO 跳转） |

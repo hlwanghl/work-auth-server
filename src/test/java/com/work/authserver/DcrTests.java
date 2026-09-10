@@ -126,4 +126,43 @@ class DcrTests {
         assertThat(register.statusCode()).isEqualTo(400);
         assertThat(register.body()).contains("invalid_client_metadata");
     }
+
+    @Test
+    void confidentialRegistrationIsRejected() throws Exception {
+        // Open registration is public-clients-only (FR-7): RFC 7591 defaults
+        // token_endpoint_auth_method to client_secret_basic when omitted — Spring would mint a
+        // secret for it. Rejecting the omission proves the default-to-confidential path is closed,
+        // matching the advertised token_endpoint_auth_methods_supported (discovery metadata).
+        String registration = """
+                {
+                  "client_name": "sneaky-confidential",
+                  "redirect_uris": ["%s"],
+                  "grant_types": ["authorization_code", "refresh_token"],
+                  "response_types": ["code"]
+                }
+                """.formatted(REDIRECT_URI);
+
+        HttpResponse<String> register = TestHttp.postJson(client, url("/oauth2/register"), registration);
+        assertThat(register.statusCode()).isEqualTo(400);
+        assertThat(register.body()).contains("invalid_client_metadata");
+    }
+
+    @Test
+    void unadvertisedGrantTypeIsRejected() throws Exception {
+        // client_credentials is deliberately out of scope (requirements §4) and not advertised in
+        // the discovery metadata — self-granting it at registration must fail just the same.
+        String registration = """
+                {
+                  "client_name": "grant-grabber",
+                  "redirect_uris": ["%s"],
+                  "grant_types": ["authorization_code", "client_credentials"],
+                  "response_types": ["code"],
+                  "token_endpoint_auth_method": "none"
+                }
+                """.formatted(REDIRECT_URI);
+
+        HttpResponse<String> register = TestHttp.postJson(client, url("/oauth2/register"), registration);
+        assertThat(register.statusCode()).isEqualTo(400);
+        assertThat(register.body()).contains("invalid_client_metadata");
+    }
 }

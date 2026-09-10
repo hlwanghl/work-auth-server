@@ -30,8 +30,8 @@
 
 - **FR-4 授权码 + PKCE**：授权码流程对所有客户端**强制 PKCE**（`requireProofKey=true`），支持
   `authorization_code` 与 `refresh_token`。两种客户端形态：**公共客户端**（MCP agent，
-  `token_endpoint_auth_method=none`，无 secret）与**机密客户端**（网站应用，client_secret，
-  basic/post 认证，见 FR-15）。
+  `token_endpoint_auth_method=none`，无 secret）与**机密客户端**（网站应用，client_secret，仅 Basic
+  认证，见 FR-15）。
 - **FR-5 用户显式同意或拒绝（consent）**：授权流程必须经过 consent 页面——向用户展示客户端标识与
   所申请的 scope。**用户明确同意后才能继续并发放授权码**；**用户也可显式拒绝**：拒绝后客户端按
   RFC 6749 §4.1.2.1 收到 `error=access_denied`（带回原 `state`），挂起的授权被清理、已保存的同意
@@ -42,7 +42,10 @@
   任何静态 MCP 客户端。网站应用是另一类客户端，走预注册（FR-15）。
 - **FR-7 动态客户端注册（RFC 7591，开放注册）**：任意 agent 可匿名 `POST /oauth2/register` 自注册公共
   PKCE 客户端，立即用于授权流程；返回 201 与 `client_id`，不含 secret；scope 允许自声明（`mcp:*` 场景）；
-  `redirect_uri` 严格校验（https / loopback）。开放注册在 prod 保持开放（agent-native 产品的前提），
+  `redirect_uri` 严格校验（https / loopback）。开放注册**只接受公共客户端**：`token_endpoint_auth_method`
+  必须为 `none`（按 RFC 7591 缺省会落到 `client_secret_basic` 并生成 secret，此路径一律拒绝），
+  `grant_types` 只能在 `authorization_code`/`refresh_token` 内——开放注册不得铸造机密客户端或自授
+  未开放的授权类型（见 §4）。开放注册在 prod 保持开放（agent-native 产品的前提），
   靠限流与回收来加固，而不是关掉。
 - **FR-8 注册零出网（不变量）**：注册过程中本服务**绝不请求客户端提供的任何 URL**。`jwks_uri` 一律拒绝
   （`invalid_client_metadata`）——"不接受按引用的客户端密钥"是强制不变量，而非当前实现的巧合，杜绝未来
@@ -63,7 +66,10 @@
 - **FR-12 issuer 稳定**：`iss` 与全部 discovery 端点地址**硬设**为公网源（`app.issuer`，即网关地址），
   与请求实际到达路径（`:9000` 直连或经网关）无关；网关对令牌按此 issuer 校验。
 - **FR-13 元数据与密钥发布**：发布 RFC 8414 授权服务器元数据（含 `registration_endpoint`）与
-  `/oauth2/jwks` 签名公钥。
+  `/oauth2/jwks` 签名公钥。元数据遵守**最小暴露**：只声明实际启用的能力——`grant_types_supported`
+  仅 `authorization_code`/`refresh_token`（框架默认会多列 `client_credentials` 与 token exchange），
+  token/撤销/自省端点的认证方式仅 `none`/`client_secret_basic`（框架默认列六种，反而漏掉公共客户端
+  用的 `none`）；与 FR-7 的注册约束共同保证"广告即能力"。
 
 ### 网站应用接入
 

@@ -2,6 +2,8 @@ package com.work.authserver.client;
 
 import org.springframework.security.oauth2.server.authorization.OAuth2ClientRegistration;
 import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientRegistrationAuthenticationContext;
@@ -10,6 +12,7 @@ import org.springframework.security.oauth2.server.authorization.authentication.O
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientRegistrationAuthenticationValidator;
 
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -22,10 +25,17 @@ import java.util.function.Consumer;
  *   <li>{@link #rejectByReferenceKeyUris()} — {@code jwks_uri} rejected outright;</li>
  *   <li>{@link OAuth2ClientRegistrationAuthenticationValidator#SIMPLE_SCOPE_VALIDATOR} — clients may
  *       self-declare scopes (the default validator rejects any scope, which blocks the agent
- *       self-onboarding this server exists for).</li>
+ *       self-onboarding this server exists for);</li>
+ *   <li>{@link #publicPkceClientsOnly()} — open registration mints public PKCE clients only, so the
+ *       capabilities the discovery document advertises (discovery/DiscoveryMetadataPolicy) are
+ *       exactly the ones a dynamically registered client can hold.</li>
  * </ol>
  */
 public final class DcrRegistrationPolicy {
+
+    private static final Set<String> REGISTRABLE_GRANT_TYPES = Set.of(
+            AuthorizationGrantType.AUTHORIZATION_CODE.getValue(),
+            AuthorizationGrantType.REFRESH_TOKEN.getValue());
 
     private DcrRegistrationPolicy() {
     }
@@ -42,7 +52,37 @@ public final class DcrRegistrationPolicy {
             provider.setAuthenticationValidator(
                     OAuth2ClientRegistrationAuthenticationValidator.DEFAULT_REDIRECT_URI_VALIDATOR
                             .andThen(rejectByReferenceKeyUris())
-                            .andThen(OAuth2ClientRegistrationAuthenticationValidator.SIMPLE_SCOPE_VALIDATOR));
+                            .andThen(OAuth2ClientRegistrationAuthenticationValidator.SIMPLE_SCOPE_VALIDATOR)
+                            .andThen(publicPkceClientsOnly()));
+        };
+    }
+
+    /**
+     * Open registration is reserved for public PKCE clients (FR-7): {@code token_endpoint_auth_method}
+     * must be {@code none} and {@code grant_types} (when present) a subset of auth code/refresh.
+     * Without this, a registrant could mint a confidential client ({@code client_secret_basic} is
+     * RFC 7591's default when the field is omitted — Spring generates a secret for it) or self-grant
+     * an unadvertised grant such as {@code client_credentials}, and the server would silently serve
+     * capabilities beyond its advertised surface. Pre-registered confidential clients (FR-15) do not
+     * come in through this endpoint.
+     */
+    private static Consumer<OAuth2ClientRegistrationAuthenticationContext> publicPkceClientsOnly() {
+        return context -> {
+            OAuth2ClientRegistration registration =
+                    ((OAuth2ClientRegistrationAuthenticationToken) context.getAuthentication())
+                            .getClientRegistration();
+            String authMethod = registration.getTokenEndpointAuthenticationMethod();
+            List<String> grantTypes = registration.getGrantTypes();
+            if (!ClientAuthenticationMethod.NONE.getValue().equals(authMethod)
+                    || (grantTypes != null && (grantTypes.isEmpty()
+                            || !REGISTRABLE_GRANT_TYPES.containsAll(grantTypes)))) {
+                throw new OAuth2AuthenticationException(new OAuth2Error(
+                        "invalid_client_metadata",
+                        "open registration is for public PKCE clients only: token_endpoint_auth_method"
+                                + " must be \"none\" and grant_types, when given, within"
+                                + " [authorization_code, refresh_token]",
+                        "https://datatracker.ietf.org/doc/html/rfc7591#section-3.2.2"));
+            }
         };
     }
 
